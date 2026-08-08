@@ -1,0 +1,87 @@
+--- ../firmware/v213/Marlin-2.1.3-b3-JOKER-SLB/Marlin/config.ini	2026-08-09 00:43:33.775863600 +0530
++++ /d/mm-build/joker/Marlin/config.ini	2026-08-09 02:03:29.650790800 +0530
+@@ -67,7 +67,7 @@
+ ; u8glib_ssd1306                           = on   ;OLED屏幕驱动
+ display_sleep_minutes                    = 3   ;息屏时间
+ editable_display_timeout                 = on   ;息屏超时菜单
+-lcd_language                             = zh_CN   ;UI语言 'en':'English', 'an':'Aragonese', 'bg':'Bulgarian', 'ca':'Catalan', 'cz':'Czech', 'da':'Danish', 
++lcd_language                             = en   ;UI语言 'en':'English', 'an':'Aragonese', 'bg':'Bulgarian', 'ca':'Catalan', 'cz':'Czech', 'da':'Danish', 
+ ;'de':'German', 'el':'Greek (Greece)', 'el_CY':'Greek (Cyprus)', 'es':'Spanish', 'eu':'Basque-Euskera', 'fi':'Finnish', 'fr':'French', 'gl':'Galician',
+ ; 'hr':'Croatian', 'hu':'Hungarian', 'it':'Italian', 'jp_kana':'Japanese', 'ko_KR':'Korean (South Korea)', 'nl':'Dutch', 'pl':'Polish', 'pt':'Portuguese', 
+ ; 'pt_br':'Portuguese (Brazilian)', 'ro':'Romanian', 'ru':'Russian', 'sk':'Slovak', 'sv':'Swedish', 'tr':'Turkish',
+@@ -97,10 +97,10 @@
+ bed_mintemp                              = -5   ;热床 最低温度
+ bed_maxtemp                              = 120   ;热床 最高温度
+ 
+-x_driver_type                            = A4988   ;驱动类型'A4988', 'A5984', 'DRV8825', 'LV8729', 'TB6560', 'TB6600',   ------（主要参数）------
+-y_driver_type                            = A4988   ; 'TMC2100', 'TMC2130', 'TMC2130_STANDALONE', 'TMC2160', 'TMC2160_STANDALONE',
+-z_driver_type                            = A4988   ;'TMC2208', 'TMC2208_STANDALONE', 'TMC2209', 'TMC2209_STANDALONE', 'TMC2240', 'TMC2660', 'TMC2660_STANDALONE',
+-e0_driver_type                           = A4988   ;'TMC5130', 'TMC5130_STANDALONE', 'TMC5160', 'TMC5160_STANDALONE'  ------（无UART模式的2208等其他驱动都设置A4988即可）------
++x_driver_type                            = TMC2208_STANDALONE   ;驱动类型'A4988', 'A5984', 'DRV8825', 'LV8729', 'TB6560', 'TB6600',   ------（主要参数）------
++y_driver_type                            = TMC2208_STANDALONE   ; 'TMC2100', 'TMC2130', 'TMC2130_STANDALONE', 'TMC2160', 'TMC2160_STANDALONE',
++z_driver_type                            = TMC2208_STANDALONE   ;'TMC2208', 'TMC2208_STANDALONE', 'TMC2209', 'TMC2209_STANDALONE', 'TMC2240', 'TMC2660', 'TMC2660_STANDALONE',
++e0_driver_type                           = TMC2208_STANDALONE   ;'TMC5130', 'TMC5130_STANDALONE', 'TMC5160', 'TMC5160_STANDALONE'  ------（无UART模式的2208等其他驱动都设置A4988即可）------
+ 
+ x_bed_size                               = 125   ;平台尺寸X  ------（主要参数）------
+ y_bed_size                               = 125   ;平台尺寸Y  ------（主要参数）------
+@@ -109,7 +109,7 @@
+ y_min_pos                                = 0   ;Y最小位置
+ y_max_pos                                = 145   ;Y最大位 Y_BED_SIZE
+ z_min_pos                                = 0   ;Z最小位置
+-z_max_pos                                = 161   ;Z最大位置  ------（主要参数）------
++z_max_pos                                = 145   ;Z最大位置  ------（主要参数）------
+ 
+ default_axis_steps_per_unit              = { 100, 100, 1600, 87 }    ;脉冲- { 80, 80, 400, 87 }   ------（主要参数）------
+ ; axis_relative_modes                      = { false, false, false, false }   ;运动模式 false绝对模式 (G90)
+@@ -135,7 +135,7 @@
+ invert_z_dir                             = false   ;
+ invert_e0_dir                            = true   ;
+ 
+-thermal_protection_bed                   = off   ;热保护 热床    ---小鲁班12V不开off，24V开on---
++thermal_protection_bed                   = on   ;热保护 热床    ---小鲁班12V不开off，24V开on---
+ pidtempbed                               = off   ;启用热床 PID控制   ---小鲁班12V不开off，24V开on---
+ [config:advanced]  ;高级配置，按需配置
+ lcd_bed_tramming                         = on   ;手动调平菜单
+@@ -228,23 +228,26 @@
+ SPINDLE_SERVO                            = off   ;控制激光的舵机
+ 
+ ;------------高级功能------------
+-babystepping                             = off   ;微步调整开启
++babystepping                             = on   ;微步调整开启
++babystep_zprobe_offset                   = on   ;Combine M851 Z with babystepping
++g38_probe_target                         = on   ;G38.2/G38.3 probe toward target
++g38_probe_away                           = on   ;G38.4/G38.5 probe away - bed edge finding
+ babystep_multiplicator_xy                = 1   ;每个XY微步的步数或毫米距离
+ babystep_invert_z                        = on   ;on/off改调整方向
+ babystep_multiplicator_z                 = 1   ;每个Z轴微步的步数或毫米距离
+ 
+ s_curve_acceleration                     = on   ;S曲线加速
+ 
+-lin_advance                              = off   ;线性挤出
++lin_advance                              = off   ;线性挤出  ;FORCED OFF: incompatible with I2S stepper stream on MM_JOKER
+ advance_k                                = 0.22   ;每1mm/s挤出速度下的压缩长度
+ advance_k_extra                          = on   ; 添加第二个线性推进常数，可通过M900 L配置
+ experimental_i2s_la                      = on   ;允许I2S_STEPPER_STREAM与LA一起使用
+ 
+-shaping_menu                             = off   ;添加输入整形设置菜单
+-input_shaping_x                          = off   ;输入整形开X
++shaping_menu                             = on   ;添加输入整形设置菜单
++input_shaping_x                          = on   ;输入整形开X
+ shaping_freq_x                           = 40.0
+ shaping_zeta_x                           = 0.4
+-input_shaping_y                          = off   ;输入整形开Y
++input_shaping_y                          = on   ;输入整形开Y
+ shaping_freq_y                           = 40.0
+ shaping_zeta_y                           = 0.4
+ 
+@@ -254,8 +257,8 @@
+ thermal_protection_hysteresis            = 10   ;波动范围℃
+ thermal_protection_period                = 120   ;检查周期S
+ ; thermal_protection_bed                   = on   ;热保护 热床
+-thermal_protection_bed_hysteresis        = 2   ;波动范围℃
+-thermal_protection_bed_period            = 120   ;检查周期S
++thermal_protection_bed_hysteresis        = 8   ;波动范围℃
++thermal_protection_bed_period            = 180   ;检查周期S
+ 
+ pid_edit_menu                            = on   ;菜单中添加PID编辑功能
+ pid_autotune_menu                        = on   ;菜单中添加PID自动调谐功能

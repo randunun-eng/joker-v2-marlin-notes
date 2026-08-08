@@ -1,0 +1,11 @@
+Documentation and prose in this repository are licensed under
+Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/
+
+config/config.ini is derived from the Marlin configuration distributed by
+MagicMaker and remains licensed under the GNU General Public License v3.0,
+as does Marlin firmware itself.
+https://www.gnu.org/licenses/gpl-3.0.html
+
+Marlin Firmware: Copyright (C) MarlinFirmware
+Not affiliated with or endorsed by MagicMaker.

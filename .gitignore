@@ -1,0 +1,4 @@
+*.bin
+*.zip
+.pio/
+__pycache__/
