@@ -78,3 +78,53 @@ rather than silently mangling the print.
 * USB streaming dies if the host sleeps or the cable is disturbed. For long or
   unattended prints prefer SD: FAT32, under 16 GB, Class 4+, quick-format OFF,
   and **8.3 filenames** (`TEST1.GCO`).
+
+---
+
+# printerd: persistent print service
+
+`tools/usb_print.py` ties the print to a terminal session. `tools/printerd.py`
+is the daemon version: it owns the serial port for its whole lifetime (a
+reconnect would reset the ESP32) and exposes the printer over HTTP, so a
+browser tab, the CLI and the MCP server all see one consistent state.
+
+    tools/printerd.py                 # then open http://127.0.0.1:8765
+    tools/printerd.py --no-connect    # serve the UI without opening the port
+
+**SD upload is the default path**, not USB streaming:
+
+    M28 NAME.GCO -> stream -> M29 -> M23 NAME.GCO -> M24
+
+After `M24` the printer runs off its own card, so the Mac becomes irrelevant --
+sleep it, unplug USB, the print continues. Progress then comes from polling
+`M27`, which needs no open stream. Verified present in this firmware:
+`SDSUPPORT` on (`Configuration.h:1939`), `M28` compiled (`gcode.cpp:474`).
+
+Cost: `BINARY_FILE_TRANSFER` is disabled, so upload is ASCII and takes roughly
+25-45 min for a 20 MB file. That is expected.
+
+SD upload buys **robustness, not speed.** Measured mid-print over USB, the link
+ran at 360 B/s against ~25,000 B/s capacity (1.4% utilisation) with ~80 ms per
+command -- far longer than serial round-trip latency. The printer paces the job,
+not the cable.
+
+## 8.3 filenames are mandatory
+
+`LONG_FILENAME_HOST_SUPPORT` is disabled, so uploads must be 8.3. Naive
+truncation collides -- `eiffel_final_PLA_4h11m` and `eiffel_final_PLA_9h50m`
+both reduce to `EIFFELFI`, which would silently overwrite the wrong file on the
+card, possibly one being printed. `sd_name()` therefore uses 4 characters of the
+stem plus 4 hex characters of a path hash: stable per file, unique across files.
+
+## MCP
+
+`tools/mcp_printer.py` is a thin client over printerd's HTTP API -- it holds no
+serial handle, because the port is exclusive and printerd owns it.
+
+    claude mcp add joker -- /path/to/tools/mcp_printer.py
+
+Tools: `printer_status`, `list_gcode`, `start_print`, `abort_print`.
+There is deliberately **no raw-G-code tool**; motion and heaters are not
+scriptable from a prompt, and `start_print` cannot bypass the bounds check.
+`abort_print` is not an emergency stop -- EMERGENCY_PARSER is impossible on
+ESP32, so aborts queue behind buffered moves.
