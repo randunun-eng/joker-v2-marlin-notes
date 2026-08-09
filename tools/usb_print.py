@@ -31,6 +31,7 @@ rather than silently mangling the print.
 
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -42,6 +43,9 @@ except ImportError:
 
 DEFAULT_PORT = "/dev/cu.usbserial-2120"
 DEFAULT_BAUD = 250000
+
+# MM slb / JOKER V2: 125 x 125 bed, 145 mm Z (MM slb 0.4 nozzle.json).
+DEFAULT_BED = (125.0, 125.0, 145.0)
 
 # No 'ok' for this long => something is wrong. Marlin emits busy every ~2 s
 # while working, and we reset this timer on ANY received byte, so a generous
@@ -71,6 +75,50 @@ def load_gcode(path):
             if line:
                 cmds.append(line)
     return cmds
+
+
+def bounds(cmds):
+    """Extent of every commanded move. Returns (xr, yr, zr) or None."""
+    xs, ys, zs = [], [], []
+    for ln in cmds:
+        if ln.startswith(("G0 ", "G1 ")):
+            for ax, acc in (("X", xs), ("Y", ys), ("Z", zs)):
+                m = re.search(rf"{ax}(-?\d+\.?\d*)", ln)
+                if m:
+                    acc.append(float(m.group(1)))
+    if not xs or not ys:
+        return None
+    return ((min(xs), max(xs)), (min(ys), max(ys)),
+            (min(zs), max(zs)) if zs else (0.0, 0.0))
+
+
+def check_bounds(cmds, bed):
+    """
+    Returns (ok, report_lines). Catches G-code sliced for a different printer --
+    the single most destructive mistake available here, since an out-of-range
+    move drives the head into the frame at full speed.
+    """
+    bx, by, bz = bed
+    ext = bounds(cmds)
+    if ext is None:
+        return True, ["  bounds        : no G0/G1 moves found (nothing to check)"]
+    (x0, x1), (y0, y1), (z0, z1) = ext
+    ok = (x1 <= bx and y1 <= by and z1 <= bz
+          and x0 >= -0.01 and y0 >= -0.01)
+    lines = [
+        f"  X range       : {x0:.1f} .. {x1:.1f}   (bed {bx:g})",
+        f"  Y range       : {y0:.1f} .. {y1:.1f}   (bed {by:g})",
+        f"  Z range       : {z0:.1f} .. {z1:.1f}   (max {bz:g})",
+    ]
+    if ok:
+        lines.append(f"  bounds        : FITS {bx:g}x{by:g}x{bz:g}")
+    else:
+        lines.append(f"  bounds        : *** OUT OF BOUNDS for {bx:g}x{by:g}x{bz:g} ***")
+        lines.append("                  This file was almost certainly sliced for a")
+        lines.append("                  different printer. Printing it will drive the")
+        lines.append("                  head into the frame. Re-slice with 'Joker V2")
+        lines.append("                  wired'. Override only with --force.")
+    return ok, lines
 
 
 def human_time(seconds):
@@ -189,10 +237,19 @@ class Printer:
             # echo:busy, //, echo:, mesh output, etc: keep waiting.
 
 
-def stream(path, port, baud, reset, verbose):
+def stream(path, port, baud, reset, verbose, bed, force):
     cmds = load_gcode(path)
     if not cmds:
         sys.exit(f"{path}: no executable G-code found")
+
+    # Refuse out-of-bed files BEFORE touching the port: opening it resets the
+    # board, and a file sliced for another printer will wreck this one.
+    ok, report = check_bounds(cmds, bed)
+    if not ok:
+        print("\n".join(report))
+        if not force:
+            sys.exit("\nRefusing to print out-of-bounds G-code. Re-slice, or pass --force.")
+        print("\n--force given: proceeding despite out-of-bounds moves.")
 
     total = len(cmds)
     print(f"File     : {path}")
@@ -258,7 +315,7 @@ def stream(path, port, baud, reset, verbose):
     return 1 if aborted else 0
 
 
-def dry_run(path):
+def dry_run(path, bed):
     cmds = load_gcode(path)
     print(f"File     : {path}")
     print(f"Commands : {len(cmds)}")
@@ -272,6 +329,8 @@ def dry_run(path):
     print(f"  last command  : {cmds[-1]}")
     has_home = any(c.startswith("G28") for c in cmds)
     print(f"  homes (G28)   : {'yes' if has_home else 'NO -- unusual, check start G-code'}")
+    for line in check_bounds(cmds, bed)[1]:
+        print(line)
     if "M420 S1" in joined:
         print("  WARNING: M420 S1 present. Do not enable bed levelling while")
         print("           M851 Z is 0.00 -- the nozzle will print in air or crash.")
@@ -293,9 +352,20 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="parse and validate only; never opens the port")
     ap.add_argument("--list-ports", action="store_true")
+    ap.add_argument("--bed", default="125x125x145",
+                    help="bed volume for the bounds check (default 125x125x145)")
+    ap.add_argument("--force", action="store_true",
+                    help="print even if moves fall outside the bed (dangerous)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="echo every line to/from the printer")
     args = ap.parse_args()
+
+    try:
+        bed = tuple(float(v) for v in args.bed.lower().split("x"))
+        if len(bed) != 3:
+            raise ValueError
+    except ValueError:
+        ap.error("--bed must look like 125x125x145")
 
     if args.list_ports:
         for p in list_ports.comports():
@@ -308,13 +378,14 @@ def main():
         sys.exit(f"no such file: {args.gcode}")
 
     if args.dry_run:
-        return dry_run(args.gcode)
+        return dry_run(args.gcode, bed)
 
     if not os.path.exists(args.port):
         sys.exit(f"port not found: {args.port}\nTry --list-ports.")
 
     return stream(args.gcode, args.port, args.baud,
-                  reset=not args.no_reset, verbose=args.verbose)
+                  reset=not args.no_reset, verbose=args.verbose,
+                  bed=bed, force=args.force)
 
 
 if __name__ == "__main__":
