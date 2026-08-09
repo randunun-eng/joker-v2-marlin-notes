@@ -1,0 +1,80 @@
+# Printing over USB (the `Joker V2 wired` profile)
+
+## Why this exists
+
+**OrcaSlicer cannot print over USB.** This is not a configuration gap — the
+feature does not exist. Orca's print-host factory
+(`src/slic3r/Utils/PrintHost.cpp`, `PrintHost::get_print_host`) only ever
+constructs *network* hosts:
+
+    OctoPrint, Duet, FlashAir, AstroBox, Repetier, PrusaLink, PrusaConnect,
+    MKS, ESP3D, CrealityPrint, Obico, Flashforge, SimplyPrint, ElegooLink,
+    3DPrinterOS, Moonraker
+
+`src/slic3r/Utils/Serial.cpp` exists but is port enumeration for firmware
+flashing, not a print backend. USB streaming is a Pronterface/Cura feature.
+
+So Orca's role is **slice → Export G-code**, and `tools/usb_print.py` streams
+the result over the wire.
+
+The other reason this exists: the ESP3D wireless path on this board is not
+dependable. The ESP32's IP stack wedges after a small number of HTTP requests —
+measured from a cold boot, free heap fell 167 KB → 128 KB across **5 requests in
+60 seconds**, after which the board stopped answering ICMP and TCP entirely
+while still replying to ARP. Only a power-cycle recovers it. USB and SD do not
+have that failure mode.
+
+## The two printer profiles
+
+Both inherit `MM slb 0.4 nozzle`, so bed volume and every motion/extrusion
+parameter are identical by construction — **125 × 125 × 145 mm**, 0.4 mm nozzle.
+They differ only in how the job reaches the machine.
+
+| Profile | Transport | Host fields |
+|---|---|---|
+| `Joker V2 Wireless` | ESP3D over Wi-Fi | `print_host` = `192.168.8.109` |
+| `Joker V2 wired` | USB serial / SD | host fields blank |
+
+Installed copies live in
+`~/Library/Application Support/OrcaSlicer/user/default/machine/`.
+Each needs its `.json` **and** a matching `.info` sidecar; the `base_id` in the
+`.info` is the parent's `setting_id` (`A0I3dDAbwNC059c6`). Orca only reads new
+user presets at startup — restart it after adding one.
+
+## Usage
+
+    tools/usb_print.py FILE.gcode --dry-run    # parse + validate, never opens the port
+    tools/usb_print.py FILE.gcode              # stream to the printer
+    tools/usb_print.py --list-ports
+
+Port defaults to `/dev/cu.usbserial-2120` at **250000** baud
+(`Marlin/Configuration.h`). Requires `pyserial`.
+
+The script uses Marlin line numbering + checksums, so a corrupted line is resent
+rather than silently mangling the print.
+
+## Board-specific behaviour the script accounts for
+
+* **Opening the port resets the ESP32.** DTR/RTS drive the esptool-style
+  auto-reset circuit. That is desirable at print start (clean state), so the
+  script does it and waits for Marlin's banner. `--no-reset` attaches without
+  rebooting.
+* **`echo:busy: processing` is liveness, not an error.** Marlin floods it during
+  heating and long moves. An earlier debugging session concluded a working `G28`
+  had "crashed" purely because a script filtered `busy` out and used a short
+  read window. Never conclude anything from silence.
+* **`M112` is not immediate.** `EMERGENCY_PARSER` is impossible on ESP32 (Marlin
+  HAL limitation, `src/HAL/ESP32/inc/SanityCheck.h`), so any abort queues behind
+  buffered moves. **The physical power switch is the only real emergency stop.**
+
+## Before the first print
+
+* The **filament runout sensor works** — its indicator is visible on the unit and
+  a vendor file has printed with it in place. HANDOVER §6.3 still claims the
+  sensor reads TRIGGERED and needs `M412 S0`; that note is stale, and no `M412`
+  workaround is needed.
+* Do **not** enable `M420 S1` while `M851 Z` is `0.00` — the nozzle will crash or
+  print in air. The script's `--dry-run` warns if it sees `M420 S1`.
+* USB streaming dies if the host sleeps or the cable is disturbed. For long or
+  unattended prints prefer SD: FAT32, under 16 GB, Class 4+, quick-format OFF,
+  and **8.3 filenames** (`TEST1.GCO`).
