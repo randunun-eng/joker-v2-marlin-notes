@@ -311,6 +311,13 @@ class Daemon:
         except Exception as exc:
             self.st.set(status="error", error=str(exc))
             self.st.log(f"ERROR: {exc}")
+            # A failure here (e.g. a dropped USB handle) can land mid-print with
+            # a nonzero heater target already commanded. Only the explicit abort
+            # path used to force heaters off; any other exception left them at
+            # whatever was last set. Marlin's own thermal protection is a
+            # backstop, not a reason to skip this.
+            self._shutdown_heaters()
+            self.st.log("heaters/fan/steppers commanded off after failure")
 
     def _send(self, n, cmd):
         with self.serial_lock:
