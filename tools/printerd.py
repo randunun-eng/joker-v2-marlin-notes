@@ -149,7 +149,7 @@ class Daemon:
                 pass
 
     # -- jobs ------------------------------------------------------------
-    def start(self, path, mode="sd"):
+    def start(self, path, mode="stream"):
         cur = self.st.get()["status"]
         if cur in ("uploading", "printing", "paused"):
             raise RuntimeError(f"busy: {cur}")
@@ -163,8 +163,9 @@ class Daemon:
 
         self.abort_ev.clear()
         self.pause_ev.clear()
-        self.st.set(status="uploading" if mode == "sd" else "printing",
-                    mode=mode, file=path, sd_file=sd_name(path) if mode == "sd" else None,
+        self.st.set(status="uploading" if mode in ("sd", "upload") else "printing",
+                    mode=mode, file=path,
+                    sd_file=sd_name(path) if mode in ("sd", "upload") else None,
                     pct=0.0, line=0, total=len(cmds), started=time.time(),
                     error=None, phase="starting")
         self.job = threading.Thread(target=self._run, args=(cmds, mode), daemon=True)
@@ -179,9 +180,89 @@ class Daemon:
                     eta=(el / frac - el) if frac > 0.001 else 0,
                     phase=phase, temps=self.pr.temps)
 
+    def _send_collect(self, n, cmd, timeout=20):
+        """Send a numbered command and collect every response line up to 'ok'."""
+        out = []
+        with self.serial_lock:
+            self.pr.send_raw(up.frame(n, cmd))
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                line = self.pr.readline()
+                if line is None:
+                    continue
+                if line.lower().startswith("ok"):
+                    break
+                out.append(line)
+        return out
+
+    def _open_sd_file(self, n, name):
+        """
+        M28, and PROVE it opened. If the card is missing or the open fails,
+        Marlin leaves card.flag.saving false and silently executes every
+        following line as real G-code -- heaters and motion instead of a file
+        write. Never stream after an unconfirmed M28.
+        """
+        resp = self._send_collect(n, f"M28 {name}")
+        if not any("writing to file" in l.lower() for l in resp):
+            raise RuntimeError(
+                "M28 did not confirm 'Writing to file' -- refusing to stream. "
+                "Without an open file every line would EXECUTE (heaters + motion). "
+                "Check an SD card is inserted. Marlin said: "
+                + (" | ".join(resp[:8]) or "<nothing>"))
+        self.st.log(f"M28 confirmed: {resp[0] if resp else name}")
+
+    def _m20(self, timeout=25):
+        """Read the SD listing. Used to prove an upload actually landed."""
+        out = []
+        with self.serial_lock:
+            self.pr.send_raw("M20")
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                line = self.pr.readline()
+                if line is None:
+                    continue
+                if line.lower().startswith("ok"):
+                    break
+                out.append(line)
+        return out
+
+    def _run_upload(self, cmds):
+        """
+        Upload only: M28 -> stream -> M29 -> M20 verify. Deliberately does NOT
+        send M23/M24, so nothing heats and nothing moves. This is how the SD
+        path gets proven without committing to a print.
+        """
+        name = self.st.get()["sd_file"]
+        total = len(cmds)
+        self.st.log(f"UPLOAD-ONLY: {total} lines -> {name} (no print will start)")
+        n = 1
+        self._open_sd_file(n, name); n += 1
+        for i, c in enumerate(cmds, start=1):
+            if self.abort_ev.is_set():
+                self._send(n, "M29")
+                self.st.set(status="idle", phase="upload aborted")
+                return
+            self._send(n, c); n += 1
+            if i % 500 == 0 or i == total:
+                self._tick(i, total, f"uploading -> {name}")
+        self._send(n, "M29")
+        self.st.log("M29 sent, verifying with M20")
+
+        listing = self._m20()
+        hit = [l for l in listing if name.split(".")[0].lower() in l.lower()]
+        if hit:
+            self.st.set(status="done", phase=f"VERIFIED on SD: {hit[0]}", pct=100.0)
+            self.st.log(f"VERIFIED: {hit[0]}")
+        else:
+            self.st.set(status="error", pct=100.0,
+                        error=f"{name} not found in M20 listing")
+            self.st.log("VERIFY FAILED. M20 returned: " + " | ".join(listing[:12]))
+
     def _run(self, cmds, mode):
         try:
-            if mode == "sd":
+            if mode == "upload":
+                self._run_upload(cmds)
+            elif mode == "sd":
                 self._run_sd(cmds)
             else:
                 self._run_stream(cmds)
@@ -200,7 +281,7 @@ class Daemon:
         total = len(cmds)
         self.st.log(f"uploading {total} lines to SD as {name}")
         n = 1
-        self._send(n, f"M28 {name}"); n += 1
+        self._open_sd_file(n, name); n += 1
 
         for i, c in enumerate(cmds, start=1):
             if self.abort_ev.is_set():
@@ -406,7 +487,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(n) or "{}") if n else {}
         try:
             if p == "/api/print":
-                d.start(body["path"], body.get("mode", "sd"))
+                d.start(body["path"], body.get("mode", "stream"))
                 return self._send(200, json.dumps({"ok": True}))
             if p == "/api/abort":
                 d.abort()

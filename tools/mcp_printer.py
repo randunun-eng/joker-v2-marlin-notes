@@ -74,7 +74,7 @@ def list_gcode() -> list:
 
 
 @mcp.tool()
-def start_print(path: str, mode: str = "sd") -> dict:
+def start_print(path: str, mode: str = "stream") -> dict:
     """
     Start a print.
 

@@ -152,3 +152,32 @@ during a filament change is expected, not a crash.**
 
 Supporting features, both enabled: `ADVANCED_PAUSE_FEATURE`
 (`Configuration_adv.h:2314`), `PARK_HEAD_ON_PAUSE` (`:2352`).
+
+## SD upload over serial DOES NOT WORK on this board (measured)
+
+`M28`/`M29` are compiled in and `M28` genuinely opens a file -- Marlin replies
+`echo:Now fresh file:` and `Writing to file:` -- but the board **resets after
+about 8-9 written lines, every time**. Default mode is therefore `stream`, not
+`sd`.
+
+Ruled out by measurement, so do not re-test these:
+
+| Hypothesis | Test | Result |
+|---|---|---|
+| Too fast | 5 ms / 20 ms / 50 ms pacing | died at line 9 in all three |
+| Wi-Fi contention | `[ESP110]OFF`, then upload | died at line 9, identical |
+| Bad G-code content | stripped Klipper macros (`PRINT_START`) | died at line 8 -- one *earlier* |
+| Reset flags diagnostic | boot banner | `External + Brown out + Watchdog` together, i.e. useless |
+
+The failure tracks stream *position*, not content, rate, or radio state.
+
+**The safety net that matters:** when the board resets mid-upload,
+`card.flag.saving` clears, so any host that keeps streaming has its remaining
+lines **executed as live G-code** -- heaters and motion, from the middle of a
+file. `Printer.send_and_wait` raises on seeing `start`, which is what stops that,
+and `_open_sd_file` refuses to stream at all unless `M28` confirms. Never remove
+either check.
+
+**Use a card reader instead.** Copy the `.gcode` to the SD card on the Mac with
+an 8.3 name and start it from the LCD. That gets the robustness benefit -- the
+job runs off the card, immune to cable and host -- without the broken upload path.
