@@ -128,3 +128,27 @@ There is deliberately **no raw-G-code tool**; motion and heaters are not
 scriptable from a prompt, and `start_print` cannot bypass the bounds check.
 `abort_print` is not an emergency stop -- EMERGENCY_PARSER is impossible on
 ESP32, so aborts queue behind buffered moves.
+
+## Mid-print filament change (VERIFIED ON HARDWARE)
+
+A filament break during a host-streamed print is recoverable without losing the
+job. Confirmed on a 9h50m print at 87.6% completion:
+
+1. **Do not Ctrl-C.** That ends the print.
+2. LCD -> **Change filament** (M600). The head parks clear of the model, heaters
+   stay hot, and the unload pulls the snapped end out of the extruder.
+3. Load new filament, purge until the colour runs clean.
+4. Resume on the LCD. Streaming continues from exactly where it stopped.
+
+**Why the host survives an arbitrarily long pause:** `HOST_KEEPALIVE_FEATURE` is
+enabled (`Configuration.h:1689`), so Marlin emits `busy: paused for user` every
+~2 s throughout. `usb_print.py` resets its 90 s quiet timeout on *any* received
+byte, so the pause can last as long as needed. Do not shorten `QUIET_TIMEOUT`
+below the keepalive interval or filament changes will start killing prints.
+
+`HOST_ACTION_COMMANDS` is disabled, so the printer cannot notify the host that
+it paused. The progress line simply stops updating. **A frozen progress line
+during a filament change is expected, not a crash.**
+
+Supporting features, both enabled: `ADVANCED_PAUSE_FEATURE`
+(`Configuration_adv.h:2314`), `PARK_HEAD_ON_PAUSE` (`:2352`).
