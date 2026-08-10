@@ -120,6 +120,33 @@ class Daemon:
         with self.serial_lock:
             self.pr.send_and_wait(0, "M110 N0")
         self.st.set(connected=True)
+        threading.Thread(target=self._idle_temps, daemon=True).start()
+
+    def _idle_temps(self):
+        """
+        Poll M105 while no job is running, so the live view shows real
+        temperatures at idle instead of blanks. During a job this stays quiet:
+        streaming already carries temps, and the SD watcher owns M27.
+        """
+        while True:
+            time.sleep(3)
+            st = self.st.get()
+            if not st["connected"] or st["status"] in ("uploading", "printing", "paused"):
+                continue
+            try:
+                with self.serial_lock:
+                    self.pr.send_raw("M105")
+                    deadline = time.time() + 4
+                    while time.time() < deadline:
+                        line = self.pr.readline()
+                        if line is None:
+                            continue
+                        if "T:" in line:
+                            self.st.set(temps=line.replace("ok ", "").strip())
+                        if line.lower().startswith("ok"):
+                            break
+            except Exception:
+                pass
 
     # -- jobs ------------------------------------------------------------
     def start(self, path, mode="sd"):
@@ -312,20 +339,25 @@ button.bad{background:#c33;color:#fff}button:disabled{background:#333;color:#666
     <div><div class=k>progress</div><div class=v id=pct>-</div></div>
     <div><div class=k>elapsed</div><div class=v id=el>-</div></div>
     <div><div class=k>eta</div><div class=v id=eta>-</div></div>
-    <div><div class=k>temps</div><div class=v id=temps>-</div></div>
   </div>
+  <div style="margin-top:10px"><div class=k>temperatures</div><div class=v id=temps>-</div></div>
   <div style=margin-top:12px><button class=bad onclick=abort()>Abort</button></div>
 </div>
 <div class=card><b>Files</b><table id=files></table></div>
 <div class=card><b>Log</b><pre id=log></pre></div>
 <script>
+// Always resolve elements explicitly. Implicit globals look tempting but
+// window.status is a legacy STRING property, so `status.textContent = x`
+// silently does nothing and the field never updates.
+const $=id=>document.getElementById(id);
 const fmt=s=>{s=Math.max(0,s|0);const h=s/3600|0,m=(s%3600)/60|0;return h?`${h}:${String(m).padStart(2,'0')}`:`${m}m ${s%60}s`};
 async function tick(){
  const r=await fetch('/api/status').then(r=>r.json());
- status.textContent=r.status; phase.textContent=r.phase||r.status;
- pct.textContent=r.pct.toFixed(1)+'%'; fill.style.width=r.pct+'%';
- el.textContent=fmt(r.elapsed); eta.textContent=fmt(r.eta); temps.textContent=r.temps||'-';
- log.textContent=(r.log||[]).join('\\n'); log.scrollTop=log.scrollHeight;
+ $('status').textContent=r.status; $('phase').textContent=r.phase||r.status;
+ $('pct').textContent=r.pct.toFixed(1)+'%'; $('fill').style.width=r.pct+'%';
+ $('el').textContent=fmt(r.elapsed); $('eta').textContent=fmt(r.eta);
+ $('temps').textContent=r.temps||'-';
+ const lg=$('log'); lg.textContent=(r.log||[]).join('\\n'); lg.scrollTop=lg.scrollHeight;
 }
 async function files(){
  const r=await fetch('/api/files').then(r=>r.json());
