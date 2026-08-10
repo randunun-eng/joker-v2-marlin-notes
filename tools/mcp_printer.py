@@ -17,8 +17,8 @@ Safety posture, on purpose:
   * No raw-G-code tool. Motion and heaters are not scriptable from a prompt.
   * start_print refuses anything outside the 125x125x145 bed (printerd enforces
     it server-side; this cannot be bypassed from here).
-  * SD upload is the default: after M24 the print runs off the card, so a
-    crashed assistant, closed laptop or unplugged cable cannot kill it.
+  * Default mode is "stream". SD upload is implemented but resets this board
+    after ~8-9 lines (see docs/USB-PRINTING.md), so it is not used.
   * abort_print is NOT an emergency stop. EMERGENCY_PARSER is impossible on
     ESP32, so commands queue behind buffered moves. The power switch is the
     only real stop, and every abort response says so.
@@ -78,14 +78,13 @@ def start_print(path: str, mode: str = "stream") -> dict:
     """
     Start a print.
 
-    mode="sd" (default and strongly preferred) uploads the file to the
-    printer's SD card with M28/M29, then starts it with M23/M24. Upload of a
-    large file takes roughly 25-45 minutes because this firmware has no binary
-    file transfer. Once printing begins the job runs off the card and no longer
-    depends on this Mac.
+    mode="stream" (default) streams over USB. The job depends on the cable and
+    on the host staying awake for its whole duration.
 
-    mode="stream" streams over USB instead. The whole job then depends on the
-    cable and on the host staying awake; use it only for short prints.
+    mode="sd" would upload to the printer's SD card first, but SD upload is
+    BROKEN on this board -- it resets after ~8-9 written lines. Do not use it.
+    For a job that must survive a cable or host failure, copy the file to the
+    card with a card reader and start it from the LCD.
 
     Refuses any file whose moves fall outside the bed.
 

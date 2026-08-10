@@ -7,15 +7,15 @@ owns the serial port for its whole lifetime (reconnecting would reset the
 ESP32) and exposes the printer over HTTP, so a browser tab, a script, or the
 MCP server can all drive it without fighting over /dev/cu.usbserial-2120.
 
-DEFAULT PATH IS SD UPLOAD, not USB streaming:
+DEFAULT PATH IS USB STREAMING (mode="stream").
 
-    M28 NAME.GCO -> stream the file -> M29 -> M23 NAME.GCO -> M24
-
-Once M24 fires the printer runs from its own SD card and the host becomes
-irrelevant -- sleep the Mac, unplug USB, the print continues. Progress is then
-polled with M27, which is cheap and needs no open stream. Direct USB streaming
-is still available (mode="stream") but it makes the whole job hostage to the
-cable for its entire duration.
+SD upload (M28 -> M29 -> M23 -> M24) is implemented but DOES NOT WORK on this
+board: M28 opens the file correctly, then the board resets after ~8-9 written
+lines, every time. Ruled out by measurement: pacing (5/20/50 ms identical),
+Wi-Fi contention ([ESP110]OFF identical), and G-code content (stripping Klipper
+macros made it fail one line EARLIER). See docs/USB-PRINTING.md. To get the
+robustness benefit of printing from the card, copy the file with a card reader
+and start it from the LCD instead.
 
 Constraints baked in, all verified against this firmware:
   * 8.3 FILENAMES ONLY. LONG_FILENAME_HOST_SUPPORT is disabled, so uploads are
