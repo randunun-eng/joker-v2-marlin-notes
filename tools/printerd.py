@@ -408,10 +408,10 @@ h1{font-size:17px;margin:0 0 4px}.sub{color:#888;font-size:12px;margin-bottom:20
 table{width:100%;border-collapse:collapse}td{padding:6px 4px;border-bottom:1px solid #262626}
 button{background:#0a7;border:0;color:#000;font-weight:600;padding:6px 12px;border-radius:6px;cursor:pointer}
 button.bad{background:#c33;color:#fff}button:disabled{background:#333;color:#666;cursor:not-allowed}
-.bad-row{color:#c66}pre{background:#000;padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:11px;margin:0}
+.bad-row{color:#c66}.sub2{color:#888;font-size:11px;margin:4px 0 8px}pre{background:#000;padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:11px;margin:0}
 </style>
 <h1>JOKER V2 &mdash; print service</h1>
-<div class=sub>Default path is SD upload: once printing starts from the card, this page and the USB cable are optional.</div>
+<div class=sub>Prints stream over USB &mdash; keep this Mac awake and the cable undisturbed. SD upload over serial is broken on this board (resets after ~8 lines), so to print from the card, copy the file with a card reader and start it from the LCD.</div>
 <div class=card>
   <div id=phase>connecting&hellip;</div>
   <div class=bar><div class=fill id=fill></div></div>
@@ -424,7 +424,13 @@ button.bad{background:#c33;color:#fff}button:disabled{background:#333;color:#666
   <div style="margin-top:10px"><div class=k>temperatures</div><div class=v id=temps>-</div></div>
   <div style=margin-top:12px><button class=bad onclick=abort()>Abort</button></div>
 </div>
-<div class=card><b>Files</b><table id=files></table></div>
+<div class=card><b>Files on this Mac</b>
+  <div class=sub2>Sliced G-code found locally. The arrow shows the 8.3 name it would take on the card &mdash; these are NOT on the SD card.</div>
+  <table id=files></table></div>
+<div class=card><b>On the printer's SD card</b>
+  <button onclick=refreshSD()>Read card (M20)</button>
+  <div class=sub2>Files here can be started from the printer's own LCD, independent of this Mac.</div>
+  <table id=sd></table></div>
 <div class=card><b>Log</b><pre id=log></pre></div>
 <script>
 // Always resolve elements explicitly. Implicit globals look tempting but
@@ -451,7 +457,15 @@ async function go(p){ if(!confirm('Upload to SD and print?\\n\\n'+p))return;
  if(!r.ok)alert(await r.text()); }
 async function abort(){ if(confirm('Abort? NOT instant - use the power switch if the head is crashing.'))
  await fetch('/api/abort',{method:'POST'}); }
-setInterval(tick,1000); tick(); files();
+async function refreshSD(){
+ const t=document.getElementById('sd'); t.innerHTML='<tr><td>reading&hellip;</td></tr>';
+ const r=await fetch('/api/sd').then(r=>r.json());
+ if(r.busy){t.innerHTML='<tr><td>busy printing &mdash; not reading the card</td></tr>';return}
+ t.innerHTML=r.files.length?r.files.map(f=>`<tr><td>${f.name}</td><td style=text-align:right>${
+   f.bytes?(f.bytes/1e6).toFixed(2)+' MB':'<span class=bad-row>0 bytes (empty)</span>'}</td></tr>`).join('')
+   :'<tr><td>no files</td></tr>';
+}
+setInterval(tick,1000); tick(); files(); refreshSD();
 </script>"""
 
 
@@ -478,6 +492,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(d.st.get()))
         if p == "/api/files":
             return self._send(200, json.dumps(list_gcode()))
+        if p == "/api/sd":
+            # M20 costs serial time, so only when nothing is running.
+            if d.st.get()["status"] in ("uploading", "printing", "paused"):
+                return self._send(200, json.dumps({"busy": True, "files": []}))
+            try:
+                rows = []
+                for l in d._m20():
+                    parts = l.rsplit(" ", 1)
+                    if len(parts) == 2 and parts[1].isdigit():
+                        rows.append({"name": parts[0], "bytes": int(parts[1])})
+                return self._send(200, json.dumps({"busy": False, "files": rows}))
+            except Exception as exc:
+                return self._send(200, json.dumps({"busy": False, "files": [],
+                                                   "error": str(exc)}))
         self._send(404, "{}")
 
     def do_POST(self):
