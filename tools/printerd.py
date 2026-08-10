@@ -124,14 +124,24 @@ class Daemon:
 
     def _idle_temps(self):
         """
-        Poll M105 while no job is running, so the live view shows real
-        temperatures at idle instead of blanks. During a job this stays quiet:
-        streaming already carries temps, and the SD watcher owns M27.
+        While no host job is running, poll M105 for temperatures and M27 for SD
+        progress.
+
+        The M27 poll is what lets this page show a print that was started from
+        the printer's own LCD. That is the robust way to print here -- the job
+        runs off the card, so a dead cable or a sleeping Mac cannot kill it --
+        and this makes it observable anyway. Losing the cable loses only the
+        view, not the print.
         """
+        n = 0
         while True:
             time.sleep(3)
+            n += 1
             st = self.st.get()
-            if not st["connected"] or st["status"] in ("uploading", "printing", "paused"):
+            if not st["connected"] or st["status"] in ("uploading", "paused"):
+                continue
+            # Never interfere with our own host stream.
+            if st["status"] == "printing" and st["mode"] in ("stream", "sd"):
                 continue
             try:
                 with self.serial_lock:
@@ -145,8 +155,40 @@ class Daemon:
                             self.st.set(temps=line.replace("ok ", "").strip())
                         if line.lower().startswith("ok"):
                             break
+                    # Every other cycle (~6 s), ask whether the card is printing.
+                    if n % 2 == 0:
+                        self.pr.send_raw("M27")
+                        deadline = time.time() + 4
+                        while time.time() < deadline:
+                            line = self.pr.readline()
+                            if line is None:
+                                continue
+                            m = re.search(r"SD printing byte (\d+)/(\d+)", line)
+                            if m:
+                                self._note_sd_print(int(m.group(1)), int(m.group(2)))
+                            elif "not sd printing" in line.lower():
+                                if self.st.get()["mode"] == "sd-lcd":
+                                    self.st.set(status="done", mode=None,
+                                                phase="SD print finished or stopped")
+                                    self.st.log("SD print no longer running")
+                            if line.lower().startswith("ok"):
+                                break
             except Exception:
                 pass
+
+    def _note_sd_print(self, cur, tot):
+        """Track a print started from the LCD, which we only observe."""
+        st = self.st.get()
+        if st["mode"] != "sd-lcd":
+            self.st.set(mode="sd-lcd", status="printing", started=time.time(),
+                        file="(started from the printer's LCD)", error=None)
+            self.st.log("detected an SD print started from the LCD -- observing only")
+        frac = cur / tot if tot else 0
+        started = self.st.get()["started"] or time.time()
+        el = time.time() - started
+        self.st.set(status="printing", pct=frac * 100, line=cur, total=tot,
+                    elapsed=el, eta=(el / frac - el) if frac > 0.002 else 0,
+                    phase=f"printing from SD card ({cur:,}/{tot:,} bytes)")
 
     # -- jobs ------------------------------------------------------------
     def start(self, path, mode="stream"):
@@ -365,11 +407,13 @@ class Daemon:
     def abort(self):
         self.abort_ev.set()
         st = self.st.get()
-        if st["status"] == "printing" and st["mode"] == "sd":
-            # The card is driving; M25 pauses it, then heaters off.
+        if st["status"] == "printing" and st["mode"] in ("sd", "sd-lcd"):
+            # The card is driving, not us. M25 pauses the SD job; M524 aborts it.
             with self.serial_lock:
                 self.pr.send_raw("M25")
-            time.sleep(0.3)
+                time.sleep(0.3)
+                self.pr.send_raw("M524")
+            time.sleep(0.5)
         self._shutdown_heaters()
         self.st.set(status="idle", phase="aborted")
         self.st.log("ABORT sent. NOT instant -- M112 cannot be immediate on ESP32. "
