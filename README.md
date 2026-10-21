@@ -1,12 +1,12 @@
 # MagicMaker JOKER V2.0 — Marlin Build Notes & Config
 
-Community documentation and a working Marlin **2.1.3-beta3** configuration for the
+Community documentation and a working Marlin **2.1.2.9** configuration for the
 **MagicMaker JOKER V2.0** ESP32 mainboard (Marlin board ID `BOARD_MM_JOKER`, a
 derivative of [MRR ESPE](https://github.com/maplerainresearch/MRR_ESPE)), as shipped
 on **MagicMaker SLuban (小鲁班)** printers.
 
 Everything here was verified against real hardware — a SLuban with a 125 × 125 mm bed,
-TMC2208 standalone drivers and a 12 V 50 W heated bed. Claims are backed by serial
+TMC2209 standalone drivers (no UART wiring on this board) and a 12 V 50 W heated bed. Claims are backed by serial
 output, binary inspection, or a file-and-line citation in the Marlin source.
 
 > **Scope:** this is a *documentation + configuration* repository. It does not
@@ -25,7 +25,7 @@ waste a day each if you meet them cold.
 
 ---
 
-## The four things that will bite you
+## The five things that will bite you
 
 ### 1. Editing `Configuration.h` does nothing — and the build still succeeds
 
@@ -74,6 +74,88 @@ The I2S stepper stream drives the pin expander and is not optional here.
 
 **→ Skip pressure-advance calibration in OrcaSlicer/PrusaSlicer permanently.**
 
+### 5. Symbols get renamed between Marlin versions — silently, with a clean build
+
+**The one that cost the most time.** The vendor's `config.ini` and `pins_MM_JOKER.h`
+are written for **2.1.3-beta3**. Several symbols were renamed between 2.1.2.x and
+2.1.3, so on any other version those keys match nothing. Marlin's config generator
+**appends them to `Configuration.h` as dead `#define`s and leaves the real setting at
+its stock value.** No error. No warning. A valid binary that behaves wrongly.
+
+Four real instances, found on 2.1.2.9:
+
+| Name in the b3 files | What 2.1.2.9 actually reads | Symptom |
+|---|---|---|
+| `*_endstop_hit_state = LOW` (×7) | `*_ENDSTOP_INVERTING = true` | **every endstop read backwards** — the axis drives into its limit, grinds, then `Homing Failed` → `kill()` |
+| `default_bedkp/ki/kd` | `DEFAULT_BED_KP/KI/KD` | bed silently runs stock PID |
+| `z_clearance_for_homing` | `Z_HOMING_HEIGHT` | **no Z lift before XY homing** — nozzle can drag the bed |
+| `SD_SS_PIN` (pins file) | `SDSS` (`cardreader.cpp`) | `pins_postprocess.h` falls back to `SDSS -1`; card reader initialises on CS −1, `M21` says "No SD card", LCD shows "Attach Media" and clicking does nothing |
+
+The renames run **in both directions** relative to any given version. `FAN_PIN` →
+`FAN0_PIN` landed *before* 2.1.2.9, so the b3 pins file is correct there; `SDSS` →
+`SD_SS_PIN` landed *after*, so it is wrong. A newer-looking name is not automatically
+the right one — check which symbol the **consuming version** reads.
+
+**→ Detection, for config keys:**
+
+```bash
+grep -n "Added by config.ini" <marlin>/Marlin/Configuration.h
+```
+
+Every line it prints is a key that matched nothing and is therefore inert. Triage all
+of them. LCD cosmetics are harmless; anything touching endstops, heaters, motion or
+storage is not.
+
+**→ Detection, for pin symbols:** diff the symbols your board file defines against
+those the target version's source actually consumes. `SDSS` must be a **literal** —
+`#define SDSS SD_SS_PIN` does not compile, because `SD_SS_PIN` is gone by the point of
+use.
+
+**→ And always diff the *generated* headers against a known-good firmware**, never
+against `config.ini`, which shows intent rather than effect. Reset
+`Configuration.h`/`Configuration_adv.h` to stock before each rebuild or the dead
+appends accumulate.
+
+---
+
+## Porting to another Marlin version
+
+The board-specific surface is **three files**, so moving to a different Marlin is a few
+hours, not a rewrite:
+
+| File | Change |
+|---|---|
+| `Marlin/src/pins/esp32/pins_MM_JOKER.h` | copy verbatim (then check for renamed symbols — see trap 5) |
+| `Marlin/src/core/boards.h` | add `#define BOARD_MM_JOKER 7011` |
+| `Marlin/src/pins/pins.h` | add the `#elif MB(MM_JOKER)` include |
+
+Plus `Marlin/config.ini`, and `Marlin/_Bootscreen.h` if you want the vendor splash
+(stock Marlin ships none and `SHOW_CUSTOM_BOOTSCREEN` expects one).
+
+### Which version to build
+
+Upstream **never released 2.1.3** — the only tags are `2.1.3-b1/b2/b3`. The vendor zip
+is **b3 (tagged 2026-01-22)**; the newest actual release is **2.1.2.9 (2026-10-12)**.
+
+**Vendor b3 has a hard `G28 Y` fault on this board**: homing hangs with continuous
+`echo:busy: processing` and never returns `ok`. Reproduced repeatedly; brownout, input
+shaping, feedrate, endstop wiring and polarity, homing direction, position limits and
+Z clearance were all eliminated by test. Cause still unidentified.
+
+**2.1.2.9 homes correctly** once the trap-5 renames are fixed: `G28 Y` in 1.82 s, full
+`G28` in 8.81 s.
+
+### Build environment fixes
+
+Three more, none of which change machine behaviour:
+
+- `ini/esp32.ini`: `lib_ignore = NativeEthernet, AsyncTCP_RP2040W` — PlatformIO
+  otherwise resolves a Raspberry Pi Pico W library.
+- `ini/features.ini`: pin `esp32async/AsyncTCP@3.3.3` and
+  `mathieucarbou/ESP Async WebServer@3.0.6`. Unpinned resolves to AsyncTCP 3.5.0,
+  which needs an `esp_idf_version.h` that `espressif32@2.1.0` lacks.
+- Build from a space-free path (trap 2).
+
 ---
 
 ## Firmware variant naming (vendor bins)
@@ -86,22 +168,24 @@ The I2S stepper stream drives the pin expander and is not optional here.
 | `125口` / `150口` / `220口` | bed/travel variant |
 | `2208` / `4988` | stepper driver variant |
 
-### The `4988` vs `2208` bins do **not** differ in motor direction
+### The `4988` vs `2208` bins **do** differ in motor direction
 
 A byte-level diff of the vendor's `SLB 125口 2208-出厂版.bin` and `SLB 125口 4988-出厂版.bin`
-(both 1,121,840 bytes) shows **159 differing bytes**: three ASCII bytes of build
-timestamp plus ~180 bytes of code in two clusters.
+(both 1,121,840 bytes) shows **159 differing bytes**. Static disassembly confirms that
+the differing code includes direction writes as well as driver timing.
 
 Driver type only sets `MINIMUM_STEPPER_PULSE` and `MAXIMUM_STEPPER_RATE`
 (`Marlin/src/inc/Conditionals_adv.h`):
 
-| | A4988 | TMC2208 |
+| | A4988 | TMC2208 / 2209 |
 |---|---|---|
+| X/Y/Z/E direction tuple | `false/true/false/true` | `true/false/true/false` |
 | `MINIMUM_STEPPER_PULSE` | 1 µs | 0 |
 | `MAXIMUM_STEPPER_RATE` | 500 kHz | 5 MHz |
 
-Direction comes solely from `INVERT_*_DIR`. Picking the wrong bin costs you step
-timing, not a reversed axis.
+Direction comes from `INVERT_*_DIR`; the vendor source comment explicitly labels these
+opposite tuples. Picking the wrong variant can therefore reverse motors as well as use
+the wrong step timing.
 
 ### Published source ≠ shipped factory binaries
 
@@ -119,7 +203,9 @@ with `M115` and `M503`.**
 
 ```bash
 pip install platformio
-# extract the vendor's Marlin-2.1.3-b3-JOKER-SLB.zip to a SPACE-FREE path
+# clone upstream Marlin 2.1.2.9 to a SPACE-FREE path -- NOT the vendor's b3 zip:
+#   git clone --depth 1 --branch 2.1.2.9 https://github.com/MarlinFirmware/Marlin.git
+# then graft the board (3 files, see "Porting to another Marlin version")
 cp config/config.ini <marlin>/Marlin/config.ini      # review it first
 cd <marlin>
 python -m platformio run -e esp32
@@ -233,7 +319,10 @@ via the *Flash Filesystem* box at `192.168.0.1` (AP `MARLIN-ESP`, password `1234
 not the *Firmware Update* box below it.
 
 **There is no OctoPrint API.** `/api/version`, `/api/printer` and `/api/files/local` all
-return ESP3D's "Unknown page". Slicer "send to printer" will not work. What does work:
+return ESP3D's "Unknown page". In OrcaSlicer 2.4.2, use the native **ESP3D** host type
+instead of OctoPrint: raw Hostname/IP `192.168.8.109` and Device UI
+`http://192.168.8.109`. Orca uploads through `/upload_serial` and applies the 8.3
+filename limit. The lower-level ESP3D endpoints that also work are:
 
 - `GET /command?commandText=<gcode>` → returns `Ok` (responses go to the websocket, not this response)
 - `GET /files?action=list&path=/` → JSON listing of the flash filesystem
@@ -245,16 +334,27 @@ The vendor documents AP mode as a cause of random reboots; **station (client) mo
 
 ## Configuration
 
-[`config/config.ini`](config/config.ini) — full working configuration.
-[`config/config.ini.diff`](config/config.ini.diff) — just the changes from vendor stock.
+| File | For | Status |
+|---|---|---|
+| [`config/config-2.1.2.9.ini`](config/config-2.1.2.9.ini) | upstream **2.1.2.9** | **verified on hardware** — homes, prints, SD works |
+| [`config/pins_MM_JOKER-2.1.2.9.h`](config/pins_MM_JOKER-2.1.2.9.h) | upstream **2.1.2.9** | board file with the `SDSS` alias (trap 5) |
+| [`config/config.ini`](config/config.ini) | vendor **2.1.3-b3** | compiles, but b3 hangs on `G28 Y` — see "Which version to build" |
+| [`config/config.ini.diff`](config/config.ini.diff) | vendor 2.1.3-b3 | changes from vendor stock |
+
+The 2.1.2.9 config deliberately matches the known-good 2.0.8.1 machine behaviour
+rather than the vendor's 2.1.3 defaults: endstop polarity `true`, bed thermal
+protection **on**, `Z_HOMING_HEIGHT 5`, hotend PID `18.00/1.47/55.30`, bed PID on at
+`74.10/14.22/257.80`, directions `true/false/true/false`.
+
+The table below describes the **b3** config and is kept for reference.
 
 | Change | Rationale |
 |---|---|
 | `lcd_language` `zh_CN` → `en` | The "SLB" (English) source ships set to Chinese |
 | `z_max_pos` `161` → `145` | Machine-specific overhead clearance — **set yours** |
-| `*_driver_type` `A4988` → `TMC2208_STANDALONE` | Correct step pulse timing for 2208s |
+| `*_driver_type` — **leave at `A4988`** | The vendor's own comment says UART-less Trinamics should stay `A4988`. The type only sets step-pulse timing, and with `I2S_STEPPER_STREAM` pulses land on the 4 µs DMA grid anyway, so it changes nothing real. Direction is set by `INVERT_*_DIR`, not by this. |
 | `babystepping` + `babystep_zprobe_offset` → `on` | Live first-layer adjustment, writes back to `M851 Z` |
-| `input_shaping_x/y` + `shaping_menu` → `on` | Ringing suppression, runtime `M593` |
+| `input_shaping_x/y` + `shaping_menu` | **Leave off.** `M593` exists from 2.1.x, but input shaping on an I2S stepper stream depends on [PR #28710](https://github.com/MarlinFirmware/Marlin/pull/28710), still an open pull request reported as tested on a TinyBee *with no motors attached*. Unproven on this board. |
 | `g38_probe_target` + `g38_probe_away` → `on` | Probe-toward/away, enables bed edge-finding |
 | `thermal_protection_bed` → `on`, hysteresis `2`→`8` °C, period `120`→`180` s | See the warning below |
 | `lin_advance` | forced `off` — impossible on this board |
@@ -275,11 +375,16 @@ better, and it is a comfort feature rather than a safety one.
 **If you get spurious "Thermal Runaway" or "Heating Failed" on the bed, widen these
 further or follow the vendor and disable the feature.** Your call, your machine.
 
-### Input shaping frequencies are placeholders
+### Input shaping is not usable here yet
 
-`shaping_freq_x/y = 40.0`, `zeta = 0.4` are **guesses**, not measurements. Measure your
-own with a ringing tower or an accelerometer, then set `M593 X F<hz>` / `M593 Y F<hz>`
-and `M500`.
+`M593` is present from Marlin 2.1.x, but working input shaping on an I2S stepper
+stream needs the shared-scheduler work in
+[PR #28710](https://github.com/MarlinFirmware/Marlin/pull/28710) — still an open pull
+request, reported as tested on a TinyBee **without motors attached**. Nothing
+demonstrates it working on this board.
+
+An accelerometer measures resonance; it cannot resolve a scheduler incompatibility.
+Resolve the firmware path before buying ADXL345 hardware for this printer.
 
 ---
 

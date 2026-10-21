@@ -1,15 +1,15 @@
 {
-	"from": "User",
-	"inherits": "MM slb 0.4 nozzle",
-	"name": "Joker V2 Wireless",
-	"print_host": "192.168.8.109",
-	"print_host_webui": "http://192.168.8.109",
-	"printer_extruder_id": [
-		"1"
-	],
-	"printer_extruder_variant": [
-		"Direct Drive Standard"
-	],
-	"printer_settings_id": "Joker V2 Wireless",
-	"version": "2.4.2.1"
+    "from": "User",
+    "inherits": "MM slb 0.4 nozzle",
+    "name": "Joker V2 Wireless",
+    "print_host": "192.168.1.20",
+    "print_host_webui": "http://192.168.1.20",
+    "printer_extruder_id": [
+        "1"
+    ],
+    "printer_extruder_variant": [
+        "Direct Drive Standard"
+    ],
+    "printer_settings_id": "Joker V2 Wireless",
+    "version": "2.4.2.1"
 }
